@@ -7,10 +7,11 @@
 #include <Thread.h>
 #include <ThreadController.h>
 
-const char* ssid = ;//SET THIS
-const char* password = ;//SET THIS
+const char* ssid = "";//SET THIS
+const char* password = "";//SET THIS
+const char* uuid = "8e973cac-d3af-4dd4-8754-4e98e399549d";
 
-int nLEDs = 266;
+int nLEDs = 160*3;
 int sCL = 14;
 int mOSI = 13;
 LPD8806 strip = LPD8806(nLEDs, mOSI, sCL);

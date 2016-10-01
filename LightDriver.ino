@@ -16,11 +16,53 @@ int sCL = 14;
 int mOSI = 13;
 LPD8806 strip = LPD8806(nLEDs, mOSI, sCL);
 Thread lightControl = Thread();
-int updateRate = 500;
+unsigned long updateRate = 10;
+unsigned long pattern_timer = 0;
+unsigned char pattern_state = 0;
 
 void updateLights() {
-  int i = random(0, nLEDs);
-  strip.setPixelColor(i, strip.Color(127,  0,  0));
+  unsigned char color = 0;
+  unsigned char min_color = 10;
+  unsigned char max_color = 127;
+  unsigned char addend = max_color - min_color;
+  float cycle_percent = ((float)(millis() - pattern_timer))/3000.0f;
+  if (cycle_percent > 1.0f) {
+    cycle_percent = 1.0f;
+  }
+  switch(pattern_state) {
+    case 0:
+      color = addend * cycle_percent;
+      if (cycle_percent >= 1.0f) {
+        pattern_state = 1;
+        pattern_timer = millis();
+      }
+      break;
+    case 1:
+      color = addend;
+      if (cycle_percent >= 0.3f) {
+        pattern_state = 2;
+        pattern_timer = millis();
+      }
+      break;
+    case 2:
+      color = addend * (1.0f - cycle_percent);
+      if (cycle_percent >= 1.0f) {
+        pattern_state = 3;
+        pattern_timer = millis();
+      }
+      break;
+    case 3:
+      if (cycle_percent >= 0.1f) {
+        pattern_state = 0;
+        pattern_timer = millis();
+      }
+      break;
+    default:
+      break;
+  }
+  for(int i = 0; i < nLEDs; ++i) { 
+    strip.setPixelColor(i, strip.Color(min_color + color,  0,  0));
+  }
   strip.show();
 }
 
@@ -65,7 +107,7 @@ void setup() {
   Serial.println("Ready");
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
-
+  pattern_timer = millis();
   strip.begin();
   strip.show();
 

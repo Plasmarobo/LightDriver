@@ -30,8 +30,9 @@ WiFiClient web;
 WebSocketClient webSocket;
 bool handshake_complete = false;
 typedef void (*PatternFunction)(unsigned long *pattern_timer, unsigned char *pattern_state);
-PatternFunction currentMood;
+
 const int n_moods = 28;
+int current_mood;
 char* mood_map[n_moods] = {
   "sex",
   "light",
@@ -65,7 +66,7 @@ char* mood_map[n_moods] = {
 PatternFunction mood_table[n_moods];
 
 void updateLights() {
-  currentMood(&pattern_timer, &pattern_state);
+  mood_table[current_mood](&pattern_timer, &pattern_state);
 }
 
 void pollMood() {
@@ -77,7 +78,7 @@ void pollMood() {
     if (data.length() > 0) {
       while(index < n_moods) {
         if (strcmp(mood_map[index], data.c_str()) == 0) {
-          currentMood = mood_table[index];
+          current_mood = index;
         }
       }
     }
@@ -97,6 +98,9 @@ bool setupConnection() {
     webSocket.host = websocket_host;
     if (webSocket.handshake(web)) {
       handshake_complete = true;
+      char cmd[32];
+      sprintf(cmd, "setMood %s", mood_map[current_mood]);
+      webSocket.sendData(cmd);
     }
   }
 }
@@ -198,7 +202,7 @@ void setup() {
   moodControl.enabled = true;
   moodControl.setInterval(pollRate);
   moodControl.onRun(pollMood);
-  currentMood = mood_table[0];
+  current_mood = 0;
   setupConnection();
 }
 

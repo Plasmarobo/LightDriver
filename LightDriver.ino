@@ -6,67 +6,148 @@
 #include <SPI.h>
 #include <Thread.h>
 #include <ThreadController.h>
+#include <WebSocketClient.h>
 
 const char* ssid = "";//SET THIS
 const char* password = "";//SET THIS
 const char* uuid = "8e973cac-d3af-4dd4-8754-4e98e399549d";
+char* websocket_host = "millibyte.io";
+char* websocket_path = "/bastet/";
+const unsigned short websocket_port = 8001;
 
 int nLEDs = 160*3;
 int sCL = 14;
 int mOSI = 13;
 LPD8806 strip = LPD8806(nLEDs, mOSI, sCL);
 Thread lightControl = Thread();
+Thread moodControl = Thread();
 unsigned long updateRate = 10;
+unsigned long pollRate = 2000;
 unsigned long pattern_timer = 0;
 unsigned char pattern_state = 0;
 
+WiFiClient web;
+WebSocketClient webSocket;
+bool handshake_complete = false;
+typedef void (*PatternFunction)(unsigned long *pattern_timer, unsigned char *pattern_state);
+PatternFunction currentMood;
+const int n_moods = 28;
+char* mood_map[n_moods] = {
+  "sex",
+  "light",
+  "rain",
+  "random",
+  "happy",
+  "sad",
+  "angry",
+  "win",
+  "pumped",
+  "bored",
+  "pretty",
+  "cold",
+  "hot",
+  "wet",
+  "dry",
+  "windy",
+  "calm",
+  "crazy",
+  "dark",
+  "devious",
+  "musical",
+  "lazy",
+  "sleepy",
+  "frustrated",
+  "excited",
+  "groovy",
+  "love",
+  "fun",
+};
+PatternFunction mood_table[n_moods];
+
 void updateLights() {
-  unsigned char color = 0;
-  unsigned char min_color = 10;
-  unsigned char max_color = 127;
-  unsigned char addend = max_color - min_color;
-  float cycle_percent = ((float)(millis() - pattern_timer))/3000.0f;
-  if (cycle_percent > 1.0f) {
-    cycle_percent = 1.0f;
+  currentMood(&pattern_timer, &pattern_state);
+}
+
+void pollMood() {
+  String data;
+  int index;
+  if (setupConnection()) {
+    webSocket.getData(data);
+    index = 0;
+    if (data.length() > 0) {
+      while(index < n_moods) {
+        if (strcmp(mood_map[index], data.c_str()) == 0) {
+          currentMood = mood_table[index];
+        }
+      }
+    }
   }
-  switch(pattern_state) {
-    case 0:
-      color = addend * cycle_percent;
-      if (cycle_percent >= 1.0f) {
-        pattern_state = 1;
-        pattern_timer = millis();
-      }
-      break;
-    case 1:
-      color = addend;
-      if (cycle_percent >= 0.3f) {
-        pattern_state = 2;
-        pattern_timer = millis();
-      }
-      break;
-    case 2:
-      color = addend * (1.0f - cycle_percent);
-      if (cycle_percent >= 1.0f) {
-        pattern_state = 3;
-        pattern_timer = millis();
-      }
-      break;
-    case 3:
-      if (cycle_percent >= 0.1f) {
-        pattern_state = 0;
-        pattern_timer = millis();
-      }
-      break;
-    default:
-      break;
+}
+
+bool setupConnection() {
+  if (!web.connected()) {
+    unsigned char tries = 5;
+    while ((!web.connect(websocket_host, 80)) && (tries > 0)) {
+      --tries;
+      delay(5000);
+    }
   }
-  for(int i = 0; i < nLEDs; ++i) { 
-    strip.setPixelColor(i, strip.Color(min_color + color,  0,  0));
+  if (web.connected()) {
+    webSocket.path = websocket_path;
+    webSocket.host = websocket_host;
+    if (webSocket.handshake(web)) {
+      handshake_complete = true;
+    }
   }
-  strip.show();
 }
 
 void setup() {
+  mood_table[0] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {
+    unsigned char color = 0;
+    unsigned char min_color = 10;
+    unsigned char max_color = 127;
+    unsigned char addend = max_color - min_color;
+    float cycle_percent = ((float)(millis() - *pattern_timer))/3000.0f;
+    if (cycle_percent > 1.0f) {
+      cycle_percent = 1.0f;
+    }
+    switch(*pattern_state) {
+      case 0:
+        color = addend * cycle_percent;
+        if (cycle_percent >= 1.0f) {
+          *pattern_state = 1;
+          *pattern_timer = millis();
+        }
+        break;
+      case 1:
+        color = addend;
+        if (cycle_percent >= 0.3f) {
+          *pattern_state = 2;
+          *pattern_timer = millis();
+        }
+        break;
+      case 2:
+        color = addend * (1.0f - cycle_percent);
+        if (cycle_percent >= 1.0f) {
+          *pattern_state = 3;
+          *pattern_timer = millis();
+        }
+        break;
+      case 3:
+        if (cycle_percent >= 0.1f) {
+          *pattern_state = 0;
+          *pattern_timer = millis();
+        }
+        break;
+      default:
+        break;
+    }
+    for(int i = 0; i < nLEDs; ++i) { 
+      strip.setPixelColor(i, strip.Color(min_color + color,  0,  0));
+    }
+    strip.show();
+  };
+  
   Serial.begin(115200);
   Serial.println("Booting");
   WiFi.mode(WIFI_STA);
@@ -114,12 +195,20 @@ void setup() {
   lightControl.enabled = true;
   lightControl.setInterval(updateRate);
   lightControl.onRun(updateLights);
+  moodControl.enabled = true;
+  moodControl.setInterval(pollRate);
+  moodControl.onRun(pollMood);
+  currentMood = mood_table[0];
+  setupConnection();
 }
 
 void loop() {
   ArduinoOTA.handle();
   if (lightControl.shouldRun()){
     lightControl.run();
+  }
+  if (moodControl.shouldRun()){
+    moodControl.run();
   }
 }
 

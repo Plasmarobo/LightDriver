@@ -7,15 +7,16 @@
 #include <Thread.h>
 #include <ThreadController.h>
 #include <WebSocketClient.h>
+#include <ArduinoJson.h>
 
 const char* ssid = "";//SET THIS
 const char* password = "";//SET THIS
 const char* uuid = "8e973cac-d3af-4dd4-8754-4e98e399549d";
 char* websocket_host = "millibyte.io";
-char* websocket_path = "/bastet/";
-const unsigned short websocket_port = 8001;
+char* websocket_path = "/";
+const unsigned short websocket_port = 80;
 
-int nLEDs = 160*3;
+int nLEDs = 32*15;
 int sCL = 14;
 int mOSI = 13;
 LPD8806 strip = LPD8806(nLEDs, mOSI, sCL);
@@ -32,7 +33,9 @@ bool handshake_complete = false;
 typedef void (*PatternFunction)(unsigned long *pattern_timer, unsigned char *pattern_state);
 
 const int n_moods = 28;
+const int n_brightness = 8;
 int current_mood;
+int current_brightness = 0;
 char* mood_map[n_moods] = {
   "sex",
   "light",
@@ -63,22 +66,66 @@ char* mood_map[n_moods] = {
   "love",
   "fun",
 };
+
+char* brightness_table[n_brightness] = {
+  "off",
+  "dark",
+  "dim",
+  "normal",
+  "on",
+  "light",
+  "bright",
+  "maximum",
+};
+
+unsigned char brightness_map[n_brightness] = {
+  0,
+  15,
+  25,
+  50,
+  50,
+  70,
+  90,
+  127
+};
+
 PatternFunction mood_table[n_moods];
 
 void updateLights() {
-  mood_table[current_mood](&pattern_timer, &pattern_state);
+  if (current_brightness != 0) {
+    mood_table[current_mood](&pattern_timer, &pattern_state);
+  } else {
+    for(int i = 0; i < nLEDs; ++i) { 
+      strip.setPixelColor(i, strip.Color(0, 0, 0));
+    }
+    strip.show();
+  }
 }
 
 void pollMood() {
   String data;
-  int index;
   if (setupConnection()) {
+    StaticJsonBuffer<128> json_buffer;
+    JsonObject& root = json_buffer.createObject();
+    root["type"] = "get";
+    char str[32];
+    root.printTo(str, sizeof(str));
+    webSocket.sendData(str);
     webSocket.getData(data);
-    index = 0;
-    if (data.length() > 0) {
-      while(index < n_moods) {
-        if (strcmp(mood_map[index], data.c_str()) == 0) {
+    if (data.length() > 0){
+      Serial.println("Got ");
+      Serial.print(data);
+      JsonObject& info = json_buffer.parseObject(data.c_str());
+      for(int index = 0; index < n_moods; ++index) {
+        if (strcmp(mood_map[index], info["mood"]) == 0) {
           current_mood = index;
+          break;
+        }
+      }
+      for(int index = 0; index < n_brightness; ++index) {
+        if (strcmp(brightness_table[index], info["brightness"]) == 0) {
+          current_brightness = index;
+          break;
         }
       }
     }
@@ -87,8 +134,10 @@ void pollMood() {
 
 bool setupConnection() {
   if (!web.connected()) {
+    Serial.println("Initializing websocket");
+    handshake_complete = false;
     unsigned char tries = 5;
-    while ((!web.connect(websocket_host, 80)) && (tries > 0)) {
+    while ((!web.connect(websocket_host, websocket_port)) && (tries > 0)) {
       --tries;
       delay(5000);
     }
@@ -96,20 +145,25 @@ bool setupConnection() {
   if (web.connected()) {
     webSocket.path = websocket_path;
     webSocket.host = websocket_host;
-    if (webSocket.handshake(web)) {
+    if (handshake_complete || webSocket.handshake(web)) {
       handshake_complete = true;
-      char cmd[32];
-      sprintf(cmd, "setMood %s", mood_map[current_mood]);
-      webSocket.sendData(cmd);
+      return true;
     }
   }
+  return false;
+}
+
+uint32_t WeightColor(float r, float g, float b) {
+    return strip.Color((unsigned char)(r * (float)(brightness_map[current_brightness])),
+                       (unsigned char)(g * (float)(brightness_map[current_brightness])),
+                       (unsigned char)(b * (float)(brightness_map[current_brightness])));
 }
 
 void setup() {
   mood_table[0] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {
     unsigned char color = 0;
     unsigned char min_color = 10;
-    unsigned char max_color = 127;
+    unsigned char max_color = brightness_map[current_brightness];
     unsigned char addend = max_color - min_color;
     float cycle_percent = ((float)(millis() - *pattern_timer))/3000.0f;
     if (cycle_percent > 1.0f) {
@@ -151,6 +205,79 @@ void setup() {
     }
     strip.show();
   };
+  mood_table[1] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {
+    for(int i = 0; i < nLEDs; ++i) { 
+      strip.setPixelColor(i, WeightColor(1.0f, 0.839f, 0.667f));
+    }
+    strip.show();
+  };
+  mood_table[2] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {
+    unsigned char r = random(5);  
+    if (*pattern_timer > 500) {
+      for(int i = 0; i < nLEDs; ++i) {
+        if (r <= 2) {
+          strip.setPixelColor(i, WeightColor(0.788f, 0.886f, 1.0f));    
+        } else if (r == 3) {
+          strip.setPixelColor(i, WeightColor(0.847f, 0.969f, 1.0f));
+        } else if (r == 4) {
+          strip.setPixelColor(i, WeightColor(0.251f, 0.612f, 1.0f));
+        }
+      }
+      *pattern_timer = 0;
+      strip.show();
+    }
+    
+  };
+  mood_table[3] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {
+    for(int i = 0; i < nLEDs; ++i) { 
+      strip.setPixelColor(i, random(0, brightness_map[current_brightness]), random(0, brightness_map[current_brightness]), random(0, brightness_map[current_brightness]));
+    }
+    strip.show();
+  };
+  mood_table[4] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {
+    for(int i = 0; i < nLEDs; ++i) { 
+      strip.setPixelColor(i, 122, 127, 124);
+    }
+    strip.show();
+  };
+  mood_table[5] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {
+    for(int i = 0; i < nLEDs; ++i) { 
+      strip.setPixelColor(i, WeightColor(0.788f, 0.886f, 1.0f));
+    }
+    strip.show();
+  };
+  mood_table[6] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {
+    for(int i = 0; i < nLEDs; ++i) { 
+      strip.setPixelColor(i, 127, 91, 38);
+    }
+    strip.show();
+  };
+  mood_table[7] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {
+    for(int i = 0; i < nLEDs; ++i) { 
+      strip.setPixelColor(i, 121, 127, 124);
+    }
+    strip.show();
+  };
+  mood_table[8] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
+  mood_table[9] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
+  mood_table[10] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
+  mood_table[11] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
+  mood_table[12] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
+  mood_table[13] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
+  mood_table[14] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
+  mood_table[15] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
+  mood_table[16] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
+  mood_table[17] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
+  mood_table[18] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
+  mood_table[19] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
+  mood_table[20] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
+  mood_table[21] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
+  mood_table[22] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
+  mood_table[23] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
+  mood_table[24] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
+  mood_table[25] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
+  mood_table[26] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
+  mood_table[27] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
   
   Serial.begin(115200);
   Serial.println("Booting");
@@ -202,7 +329,7 @@ void setup() {
   moodControl.enabled = true;
   moodControl.setInterval(pollRate);
   moodControl.onRun(pollMood);
-  current_mood = 0;
+  current_mood = 1;
   setupConnection();
 }
 

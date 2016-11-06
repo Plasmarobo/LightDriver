@@ -23,21 +23,21 @@ LPD8806 strip = LPD8806(nLEDs, mOSI, sCL);
 Thread lightControl = Thread();
 Thread moodControl = Thread();
 unsigned long updateRate = 10;
-unsigned long pollRate = 2000;
+unsigned long pollRate = 3000;
 unsigned long pattern_timer = 0;
 unsigned char pattern_state = 0;
 
 WiFiClient web;
 WebSocketClient webSocket;
 bool handshake_complete = false;
-typedef void (*PatternFunction)(unsigned long *pattern_timer, unsigned char *pattern_state);
+typedef bool (*PatternFunction)(unsigned long *pattern_timer, unsigned char *pattern_state);
 
 const int n_moods = 28;
 const int n_brightness = 8;
 int current_mood;
-int current_brightness = 0;
+int current_brightness;
 char* mood_map[n_moods] = {
-  "sex",
+  "sexy",
   "light",
   "rain",
   "random",
@@ -73,19 +73,19 @@ char* brightness_table[n_brightness] = {
   "dim",
   "normal",
   "on",
-  "light",
   "bright",
+  "high",
   "maximum",
 };
 
 unsigned char brightness_map[n_brightness] = {
   0,
-  15,
-  25,
+  2,
+  10,
   50,
   50,
-  70,
   90,
+  110,
   127
 };
 
@@ -93,12 +93,15 @@ PatternFunction mood_table[n_moods];
 
 void updateLights() {
   if (current_brightness != 0) {
-    mood_table[current_mood](&pattern_timer, &pattern_state);
+    if(mood_table[current_mood](&pattern_timer, &pattern_state) == true) {
+      pollMood();
+    }
   } else {
     for(int i = 0; i < nLEDs; ++i) { 
       strip.setPixelColor(i, strip.Color(0, 0, 0));
     }
     strip.show();
+    pollMood();
   }
 }
 
@@ -136,11 +139,7 @@ bool setupConnection() {
   if (!web.connected()) {
     Serial.println("Initializing websocket");
     handshake_complete = false;
-    unsigned char tries = 5;
-    while ((!web.connect(websocket_host, websocket_port)) && (tries > 0)) {
-      --tries;
-      delay(5000);
-    }
+    web.connect(websocket_host, websocket_port);
   }
   if (web.connected()) {
     webSocket.path = websocket_path;
@@ -162,40 +161,52 @@ uint32_t WeightColor(float r, float g, float b) {
 void setup() {
   mood_table[0] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {
     unsigned char color = 0;
-    unsigned char min_color = 10;
     unsigned char max_color = brightness_map[current_brightness];
+    unsigned char min_color = max_color/2;
     unsigned char addend = max_color - min_color;
-    float cycle_percent = ((float)(millis() - *pattern_timer))/3000.0f;
+    float cycle_percent = ((float)(millis() - *pattern_timer))/6000.0f;
     if (cycle_percent > 1.0f) {
       cycle_percent = 1.0f;
     }
     switch(*pattern_state) {
       case 0:
-        color = addend * cycle_percent;
-        if (cycle_percent >= 1.0f) {
+        color = 0;
+        if (cycle_percent >= 0.3f) {
           *pattern_state = 1;
           *pattern_timer = millis();
         }
         break;
       case 1:
-        color = addend;
-        if (cycle_percent >= 0.3f) {
+        color = addend * cycle_percent;
+        if (cycle_percent >= 1.0f) {
           *pattern_state = 2;
           *pattern_timer = millis();
         }
         break;
       case 2:
-        color = addend * (1.0f - cycle_percent);
-        if (cycle_percent >= 1.0f) {
+        color = addend;
+        if (cycle_percent >= 0.3f) {
           *pattern_state = 3;
           *pattern_timer = millis();
         }
         break;
       case 3:
-        if (cycle_percent >= 0.1f) {
-          *pattern_state = 0;
+        color = addend * (1.0f - cycle_percent);
+        if (cycle_percent >= 1.0f) {
+          *pattern_state = 4;
           *pattern_timer = millis();
         }
+        break;
+      case 4:
+        if (cycle_percent >= 0.1f) {
+          *pattern_state = 5;
+          *pattern_timer = millis();
+          return true;
+        }
+        break;
+      case 5:
+        *pattern_state = 0;
+        *pattern_timer = millis();
         break;
       default:
         break;
@@ -204,16 +215,18 @@ void setup() {
       strip.setPixelColor(i, strip.Color(min_color + color,  0,  0));
     }
     strip.show();
+    return false;
   };
   mood_table[1] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {
     for(int i = 0; i < nLEDs; ++i) { 
-      strip.setPixelColor(i, WeightColor(1.0f, 0.839f, 0.667f));
+      strip.setPixelColor(i, WeightColor(1.0f, 0.9f, 0.9f));
     }
     strip.show();
+    return true;
   };
   mood_table[2] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {
     unsigned char r = random(5);  
-    if (*pattern_timer > 500) {
+    if (*pattern_timer % 500 == 0) {
       for(int i = 0; i < nLEDs; ++i) {
         if (r <= 2) {
           strip.setPixelColor(i, WeightColor(0.788f, 0.886f, 1.0f));    
@@ -223,61 +236,70 @@ void setup() {
           strip.setPixelColor(i, WeightColor(0.251f, 0.612f, 1.0f));
         }
       }
-      *pattern_timer = 0;
       strip.show();
     }
-    
+    if(*pattern_timer > 5000) {
+      *pattern_timer = 0;
+      return true;
+    } else {
+      return false;
+    }
   };
   mood_table[3] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {
     for(int i = 0; i < nLEDs; ++i) { 
       strip.setPixelColor(i, random(0, brightness_map[current_brightness]), random(0, brightness_map[current_brightness]), random(0, brightness_map[current_brightness]));
     }
     strip.show();
+    return true;
   };
   mood_table[4] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {
     for(int i = 0; i < nLEDs; ++i) { 
       strip.setPixelColor(i, 122, 127, 124);
     }
     strip.show();
+    return true;
   };
   mood_table[5] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {
     for(int i = 0; i < nLEDs; ++i) { 
       strip.setPixelColor(i, WeightColor(0.788f, 0.886f, 1.0f));
     }
     strip.show();
+    return true;
   };
   mood_table[6] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {
     for(int i = 0; i < nLEDs; ++i) { 
       strip.setPixelColor(i, 127, 91, 38);
     }
     strip.show();
+    return true;
   };
   mood_table[7] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {
     for(int i = 0; i < nLEDs; ++i) { 
       strip.setPixelColor(i, 121, 127, 124);
     }
     strip.show();
+    return true;
   };
-  mood_table[8] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
-  mood_table[9] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
-  mood_table[10] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
-  mood_table[11] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
-  mood_table[12] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
-  mood_table[13] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
-  mood_table[14] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
-  mood_table[15] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
-  mood_table[16] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
-  mood_table[17] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
-  mood_table[18] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
-  mood_table[19] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
-  mood_table[20] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
-  mood_table[21] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
-  mood_table[22] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
-  mood_table[23] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
-  mood_table[24] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
-  mood_table[25] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
-  mood_table[26] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
-  mood_table[27] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {};
+  mood_table[8] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {return true;};
+  mood_table[9] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {return true;};
+  mood_table[10] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {return true;};
+  mood_table[11] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {return true;};
+  mood_table[12] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {return true;};
+  mood_table[13] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {return true;};
+  mood_table[14] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {return true;};
+  mood_table[15] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {return true;};
+  mood_table[16] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {return true;};
+  mood_table[17] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {return true;};
+  mood_table[18] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {return true;};
+  mood_table[19] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {return true;};
+  mood_table[20] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {return true;};
+  mood_table[21] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {return true;};
+  mood_table[22] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {return true;};
+  mood_table[23] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {return true;};
+  mood_table[24] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {return true;};
+  mood_table[25] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {return true;};
+  mood_table[26] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {return true;};
+  mood_table[27] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {return true;};
   
   Serial.begin(115200);
   Serial.println("Booting");
@@ -326,10 +348,8 @@ void setup() {
   lightControl.enabled = true;
   lightControl.setInterval(updateRate);
   lightControl.onRun(updateLights);
-  moodControl.enabled = true;
-  moodControl.setInterval(pollRate);
-  moodControl.onRun(pollMood);
   current_mood = 1;
+  current_brightness = 0;
   setupConnection();
 }
 
@@ -337,9 +357,6 @@ void loop() {
   ArduinoOTA.handle();
   if (lightControl.shouldRun()){
     lightControl.run();
-  }
-  if (moodControl.shouldRun()){
-    moodControl.run();
   }
 }
 

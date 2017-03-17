@@ -6,15 +6,17 @@
 #include <SPI.h>
 #include <Thread.h>
 #include <ThreadController.h>
-#include <WebSocketClient.h>
 #include <ArduinoJson.h>
+#include <ArduinoHttpClient.h>
 
-const char* ssid = "";//SET THIS
-const char* password = "";//SET THIS
-const char* uuid = "8e973cac-d3af-4dd4-8754-4e98e399549d";
-char* websocket_host = "millibyte.io";
-char* websocket_path = "/";
-const unsigned short websocket_port = 80;
+#define OTA_TIMEOUT 30000
+
+const String ssid = "";//SET THIS
+const String password = "";//SET THIS
+const String uuid = "8e973cac-d3af-4dd4-8754-4e98e399549d";
+const String bastet_host = "millibyte.io";
+const String bastet_path = "/";
+const unsigned short bastet_port = 80;
 
 int nLEDs = 32*15;
 int sCL = 14;
@@ -27,16 +29,30 @@ unsigned long pollRate = 3000;
 unsigned long pattern_timer = 0;
 unsigned char pattern_state = 0;
 
-WiFiClient web;
-WebSocketClient webSocket;
+WiFiClient wifi;
+HttpClient http = HttpClient(wifi, bastet_host, bastet_port);
+
 bool handshake_complete = false;
 typedef bool (*PatternFunction)(unsigned long *pattern_timer, unsigned char *pattern_state);
+
+const uint8_t PROGMEM gamma_factors[] = {
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    0,  0,  1,  1,  1,  1,  1,  1,  1,  1,  1,  2,  2,  2,  2,  2,
+    3,  3,  3,  3,  4,  4,  4,  5,  5,  5,  6,  6,  7,  7,  7,  8,
+    8,  9,  9, 10, 10, 11, 12, 12, 13, 13, 14, 15, 16, 16, 17, 18,
+   19, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 34,
+   35, 36, 37, 39, 40, 41, 43, 44, 45, 47, 48, 50, 51, 53, 55, 56,
+   58, 60, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81, 83, 85, 87,
+   89, 92, 94, 96, 99,101,103,106,108,111,113,116,119,121,124,127
+};
+
 
 const int n_moods = 28;
 const int n_brightness = 8;
 int current_mood;
 int current_brightness;
-char* mood_map[n_moods] = {
+unsigned long updated_at = 0;
+/* MOODS:
   "sexy",
   "light",
   "rain",
@@ -65,9 +81,9 @@ char* mood_map[n_moods] = {
   "groovy",
   "love",
   "fun",
-};
+// MOODS */
 
-char* brightness_table[n_brightness] = {
+/* BRIGHTNESSES
   "off",
   "dark",
   "dim",
@@ -76,7 +92,7 @@ char* brightness_table[n_brightness] = {
   "bright",
   "high",
   "maximum",
-};
+//BRIGHTNESS */
 
 unsigned char brightness_map[n_brightness] = {
   0,
@@ -91,6 +107,72 @@ unsigned char brightness_map[n_brightness] = {
 
 PatternFunction mood_table[n_moods];
 
+uint8_t apply_gamma(uint8_t v) {
+  return pgm_read_byte(&gamma_factors[v]);
+};
+
+void setColor(int pixelNumber, unsigned char r, unsigned char g, unsigned char b) {
+  strip.setPixelColor(pixelNumber,
+    apply_gamma(r),
+    apply_gamma(g),
+    apply_gamma(b));
+};
+
+void setColor(int pixelNumber, float r, float g, float b) {
+  setColor(pixelNumber, 
+          (unsigned char)(r * 255), 
+          (unsigned char)(g * 255),
+          (unsigned char)(b * 255));
+};
+
+
+bool setupConnection() {
+  if (!wifi.connected()) {
+    handshake_complete = false;
+    wifi.connect(bastet_host.c_str(), bastet_port);
+  }
+  if (wifi.connected()) {
+      return true;
+  }
+  return false;
+};
+
+void pollMood() {
+  String data;
+  if (setupConnection()) {
+    StaticJsonBuffer<512> json_buffer;
+    JsonObject& root = json_buffer.createObject();
+    root["request"] = json_buffer.createObject();
+    root["request"]["type"] = "StateSync";
+    root["mood"] = current_mood;
+    root["brightness"] = current_brightness;
+    root["updated_at"] = 0;
+    char str[512];
+    root.printTo(str, sizeof(str));
+    http.post("/", "application/json", str);
+    if (http.responseStatusCode() != 200) {
+      Serial.println(http.responseBody());
+    } else {
+      http.readHeader();
+      data = http.responseBody();
+      data = data.substring(data.indexOf('{'), data.lastIndexOf('}')+1);
+      if (data.length() > 0){
+        StaticJsonBuffer<512> info_buffer;
+        JsonObject& info = info_buffer.parseObject(data);
+        current_mood = info["mood"];
+        current_brightness = info["brightness"];
+        updated_at = info["updated_at"];
+        Serial.print("Mood ");
+        Serial.print(current_mood);
+        Serial.print(" Brightness ");
+        Serial.print(current_brightness);
+        Serial.print(" TimeStamp ");
+        Serial.println(updated_at);
+      }
+    }
+  }
+};
+
 void updateLights() {
   if (current_brightness != 0) {
     if(mood_table[current_mood](&pattern_timer, &pattern_state) == true) {
@@ -103,60 +185,13 @@ void updateLights() {
     strip.show();
     pollMood();
   }
-}
-
-void pollMood() {
-  String data;
-  if (setupConnection()) {
-    StaticJsonBuffer<128> json_buffer;
-    JsonObject& root = json_buffer.createObject();
-    root["type"] = "get";
-    char str[32];
-    root.printTo(str, sizeof(str));
-    webSocket.sendData(str);
-    webSocket.getData(data);
-    if (data.length() > 0){
-      Serial.println("Got ");
-      Serial.print(data);
-      JsonObject& info = json_buffer.parseObject(data.c_str());
-      for(int index = 0; index < n_moods; ++index) {
-        if (strcmp(mood_map[index], info["mood"]) == 0) {
-          current_mood = index;
-          break;
-        }
-      }
-      for(int index = 0; index < n_brightness; ++index) {
-        if (strcmp(brightness_table[index], info["brightness"]) == 0) {
-          current_brightness = index;
-          break;
-        }
-      }
-    }
-  }
-}
-
-bool setupConnection() {
-  if (!web.connected()) {
-    Serial.println("Initializing websocket");
-    handshake_complete = false;
-    web.connect(websocket_host, websocket_port);
-  }
-  if (web.connected()) {
-    webSocket.path = websocket_path;
-    webSocket.host = websocket_host;
-    if (handshake_complete || webSocket.handshake(web)) {
-      handshake_complete = true;
-      return true;
-    }
-  }
-  return false;
-}
+};
 
 uint32_t WeightColor(float r, float g, float b) {
-    return strip.Color((unsigned char)(r * (float)(brightness_map[current_brightness])),
-                       (unsigned char)(g * (float)(brightness_map[current_brightness])),
-                       (unsigned char)(b * (float)(brightness_map[current_brightness])));
-}
+    return strip.Color(apply_gamma((unsigned char)(r * (float)(brightness_map[current_brightness]))),
+                       apply_gamma((unsigned char)(g * (float)(brightness_map[current_brightness]))),
+                       apply_gamma((unsigned char)(b * (float)(brightness_map[current_brightness]))));
+};
 
 void setup() {
   mood_table[0] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {
@@ -222,7 +257,12 @@ void setup() {
       strip.setPixelColor(i, WeightColor(1.0f, 0.9f, 0.9f));
     }
     strip.show();
-    return true;
+    if ((millis() - (*pattern_timer)) > 6000) {
+      *pattern_state = 0;
+      *pattern_timer = millis();
+      return true;
+    }
+    return false;
   };
   mood_table[2] = [](unsigned long *pattern_timer, unsigned char *pattern_state) {
     unsigned char r = random(5);  
@@ -304,7 +344,7 @@ void setup() {
   Serial.begin(115200);
   Serial.println("Booting");
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
+  WiFi.begin(ssid.c_str(), password.c_str());
   while (WiFi.waitForConnectResult() != WL_CONNECTED) {
     Serial.println("Connection Failed! Rebooting...");
     delay(5000);
@@ -354,7 +394,9 @@ void setup() {
 }
 
 void loop() {
-  ArduinoOTA.handle();
+  if ((OTA_TIMEOUT > 0) && (millis() < OTA_TIMEOUT)) {
+    ArduinoOTA.handle();
+  }
   if (lightControl.shouldRun()){
     lightControl.run();
   }

@@ -185,7 +185,7 @@ void setup() {
   Serial.begin(115200);
   Serial.println("Boot");
   
-  LEDS.addLeds<LPD8806, MOSI, SCL, RGB>(leds, NLEDS);
+  LEDS.addLeds<LPD8806, MOSI, SCL, GRB>(leds, NLEDS);
   connect_all();
   
   setup_ota();

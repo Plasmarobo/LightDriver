@@ -113,6 +113,7 @@ void mqtt_callback(char *topic, uint8_t* payload, uint32_t len) {
   } else if (is_topic(topic, MQTT_DATA)) {
     if (((len - 4) % 3) != 0) {
       Serial.println("Data stream not aligned!");
+      delete [] safe_buffer;
       return;
     }
     //Parse Color instruction struct
@@ -125,6 +126,7 @@ void mqtt_callback(char *topic, uint8_t* payload, uint32_t len) {
       leds[i] = CRGB(payload[4+i], payload[5+i], payload[6+i]);
     }
   }
+  delete [] safe_buffer;
 }
 
 //OTA setup
